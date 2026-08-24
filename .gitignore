@@ -1,0 +1,19 @@
+# Rust Build Artifacts
+/src-tauri/target/
+target/
+**/*.rs.bk
+Cargo.lock
+
+# Dependencies
+node_modules/
+bun.lockb
+package-lock.json
+
+# Local Environment & Secrets
+.env
+.env.local
+*.log
+
+# OS Metadata
+.DS_Store
+Thumbs.db
