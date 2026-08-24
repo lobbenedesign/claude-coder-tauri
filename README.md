@@ -7,8 +7,8 @@
 
 [English 🇬🇧](#english) • [Italiano 🇮🇹](#italiano)
 
-> **The ultra-lightweight, native Rust desktop application for AI-assisted software engineering. Compatible with Claude Code, Ollama, LM Studio, Apple MLX, and 20+ frontier cloud LLM providers.**
-> *L'applicazione Desktop nativa ultra-leggera in Rust per lo sviluppo assistito da Intelligenza Artificiale.*
+> **The ultra-lightweight, native Rust desktop application for AI-assisted software engineering. Powered by a high-performance Rust backend (`src-tauri`) supporting streaming HTTP connections to 8 LLM providers (Ollama, Anthropic, OpenAI, Cerebras, Mistral, Groq, LM Studio, DeepSeek) and native OS filesystem workspace management.**
+> *L'applicazione Desktop nativa ultra-leggera in Rust per lo sviluppo assistito da Intelligenza Artificiale con backend nativo Rust e interfaccia WebView reattiva.*
 
 ![Claude Coder Desktop Dashboard](./ui/screenshot.jpg)
 
@@ -24,15 +24,15 @@
 * **Native OS Integration**:
   * Native folder pickers on macOS (AppleScript), Windows (FolderBrowserDialog), and Linux (Zenity).
   * 1-Click project dispatch to **Cursor**, **VS Code**, **Windsurf**, or native **Finder / File Explorer**.
-  * Rust memory safety and native sandbox security.
+  * Rust memory safety, typed error handling, and sandboxed execution.
 
 ### 🌟 Key Capabilities
 
-1. **Complete Developer Console**: Real-time terminal with ANSI streaming, syntax highlighting, and live token economics telemetry.
-2. **MCP (Model Context Protocol) Hub**: 11+ preconfigured MCP servers (GitHub, Postgres, SQLite, Puppeteer, Brave Search, Notion, Linear, Slack, Docker, Figma, RuVector) with 1-click export to Cursor and Claude CLI.
-3. **Multi-Agent & Auto-Debug Loop**: Built-in `/swarm` multi-agent pipelines, `/diagram` visual Mermaid graphs, `/prd` generator, and `/autofix` test suite self-healing.
-4. **Hands-Free Voice-to-Code**: Native voice dictation for prompt input.
-5. **Hierarchical Project Memory (Letta/MemGPT)**: 3-tier persistent memory inspector (`.claude/agentdb.json`).
+1. **Native Rust Multi-Provider LLM Core (`agent.rs`)**: Streaming HTTP client connecting directly to Ollama, OpenAI, Anthropic, Cerebras, Mistral, Groq, and LM Studio.
+2. **Native Filesystem Workspace Engine (`workspace.rs`)**: Fast file reading, writing, directory walking, search, and native file manager integration.
+3. **MCP Configuration Manager**: 1-click JSON export for 11+ Model Context Protocol server configurations to Cursor and Claude CLI settings.
+4. **Interactive Command Workflows**: UI support for `/swarm` pipeline staging, `/diagram` visual graphs, `/prd` scaffolding, and `/autofix` code validation.
+5. **Speech Input Integration**: Browser Web Speech API integration for prompt dictation.
 
 ### 🛠️ Build & Installation
 
@@ -58,11 +58,11 @@ cargo tauri build
   * Apertura istantanea di file e cartelle in **Cursor**, **VS Code**, **Windsurf** o nel **Finder/File Explorer**.
 
 ### 🌟 Funzionalità Chiave
-1. **Console di Sviluppo Completa**: Streaming ANSI in tempo reale, evidenziazione sintattica e telemetria token.
-2. **Hub Server MCP Integrato**: Marketplace preconfigurato con 11+ server MCP ed esportazione in 1 clic per Cursor e Claude CLI.
-3. **Multi-Agente & Auto-Debug**: Loop `/swarm`, diagrammi `/diagram`, specifiche `/prd` e auto-debug `/autofix`.
-4. **Dettatura Vocale Hands-Free**: Voice-to-Code nativo per dettare istruzioni vocali direttamente nel prompt.
-5. **Memoria Gerarchica (Letta/MemGPT)**: Ispezione e gestione visiva dei 3 livelli di memoria di progetto in `.claude/agentdb.json`.
+1. **Core Rust Multi-Provider (`agent.rs`)**: Client HTTP streaming nativo per 8 provider LLM (Ollama locale, Anthropic, OpenAI, Cerebras, Mistral, Groq, LM Studio).
+2. **Motore Workspace Nativo (`workspace.rs`)**: Gestione rapida di file, cartelle, scansione albero e dispatch verso editor esterni.
+3. **Manager Configurazioni MCP**: Esportazione in 1 clic delle configurazioni JSON per server MCP verso Cursor e Claude CLI.
+4. **Comandi Interattivi**: Supporto interfaccia per pipeline `/swarm`, visualizzatore diagrammi `/diagram` e task `/autofix`.
+5. **Input Vocale**: Dettatura vocale integrata tramite Web Speech API.
 
 ### 🛠️ Compilazione & Esecuzione
 ```bash
