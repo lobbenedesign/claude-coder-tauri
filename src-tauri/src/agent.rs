@@ -1,13 +1,28 @@
+use crate::AgentState;
 use futures_util::StreamExt;
 use serde_json::json;
-use tauri::{AppHandle, Emitter};
+use std::sync::atomic::Ordering;
+use std::sync::Arc;
+use tauri::{AppHandle, Emitter, State};
+
+/// Signals the currently in-flight `run_agent_stream` call (if any) to stop.
+/// This is a real abort: the streaming loops in this file poll the flag
+/// between chunks and break out of the HTTP stream as soon as it flips,
+/// instead of merely hiding the "stop" button in the UI.
+#[tauri::command]
+pub fn stop_agent_stream(state: State<'_, AgentState>) -> Result<bool, String> {
+    state.cancel_flag.store(true, Ordering::Relaxed);
+    Ok(true)
+}
 
 #[tauri::command]
 pub async fn run_agent_stream(
     app: AppHandle,
+    state: State<'_, AgentState>,
     prompt: String,
     model: String,
     workspace: String,
+    repo_map: String,
     gemini_key: String,
     groq_key: String,
     openrouter_key: String,
@@ -19,11 +34,25 @@ pub async fn run_agent_stream(
     let client = reqwest::Client::new();
     let model_lower = model.to_lowercase();
 
+    // Reset the cancellation flag for this fresh run, and hand each provider
+    // path a clone of the shared Arc so it can be polled mid-stream.
+    state.cancel_flag.store(false, Ordering::Relaxed);
+    let cancel_flag = state.cancel_flag.clone();
+
+    let repo_map_block = if repo_map.trim().is_empty() {
+        String::new()
+    } else {
+        format!("\n\nContesto struttura del progetto (repo map reale, estratta dai file su disco):\n{}\n", repo_map)
+    };
+
     let system_prompt = format!(
         "Sei CUSTOM CLAUDE CODER (v2.1 Rust Desktop), l'assistente AI avanzato di programmazione.
 Workspace attivo: '{}'.
-Fornisci codice pulito, spiegazioni passo-passo e suggerimenti di qualità per questo progetto.",
-        workspace
+Fornisci codice pulito, spiegazioni passo-passo e suggerimenti di qualità per questo progetto.
+Quando proponi una modifica a un file esistente, esprimila SEMPRE come un blocco di codice ```diff
+contenente un unified diff valido (righe --- a/<percorso relativo>, +++ b/<percorso relativo>, hunk @@),
+cosi' l'utente puo' rivederla e applicarla con un click invece di copiare/incollare codice a mano.{}",
+        workspace, repo_map_block
     );
 
     // 0. OPENAI / CHATGPT
@@ -35,6 +64,7 @@ Fornisci codice pulito, spiegazioni passo-passo e suggerimenti di qualità per q
         stream_openai_compatible(
             &app,
             &client,
+            cancel_flag.clone(),
             "https://api.openai.com/v1/chat/completions",
             &openai_key,
             real_model,
@@ -54,6 +84,7 @@ Fornisci codice pulito, spiegazioni passo-passo e suggerimenti di qualità per q
         stream_openai_compatible(
             &app,
             &client,
+            cancel_flag.clone(),
             "https://api.cerebras.ai/v1/chat/completions",
             &cerebras_key,
             real_model,
@@ -73,6 +104,7 @@ Fornisci codice pulito, spiegazioni passo-passo e suggerimenti di qualità per q
         stream_openai_compatible(
             &app,
             &client,
+            cancel_flag.clone(),
             "https://api.sambanova.ai/v1/chat/completions",
             &sambanova_key,
             real_model,
@@ -92,6 +124,7 @@ Fornisci codice pulito, spiegazioni passo-passo e suggerimenti di qualità per q
         stream_openai_compatible(
             &app,
             &client,
+            cancel_flag.clone(),
             "https://api.mistral.ai/v1/chat/completions",
             &mistral_key,
             real_model,
@@ -111,6 +144,7 @@ Fornisci codice pulito, spiegazioni passo-passo e suggerimenti di qualità per q
         stream_openai_compatible(
             &app,
             &client,
+            cancel_flag.clone(),
             "https://api.groq.com/openai/v1/chat/completions",
             &groq_key,
             real_model,
@@ -130,6 +164,7 @@ Fornisci codice pulito, spiegazioni passo-passo e suggerimenti di qualità per q
         stream_openai_compatible(
             &app,
             &client,
+            cancel_flag.clone(),
             "https://openrouter.ai/api/v1/chat/completions",
             &openrouter_key,
             real_model,
@@ -165,6 +200,10 @@ Fornisci codice pulito, spiegazioni passo-passo e suggerimenti di qualità per q
             .bytes_stream();
 
         while let Some(chunk) = stream.next().await {
+            if cancel_flag.load(Ordering::Relaxed) {
+                let _ = app.emit("agent-stopped", ());
+                return Ok(true);
+            }
             if let Ok(bytes) = chunk {
                 let text = String::from_utf8_lossy(&bytes);
                 for line in text.lines() {
@@ -201,6 +240,10 @@ Fornisci codice pulito, spiegazioni passo-passo e suggerimenti di qualità per q
 
     let mut stream = res.bytes_stream();
     while let Some(chunk) = stream.next().await {
+        if cancel_flag.load(Ordering::Relaxed) {
+            let _ = app.emit("agent-stopped", ());
+            return Ok(true);
+        }
         if let Ok(bytes) = chunk {
             let text = String::from_utf8_lossy(&bytes);
             for line in text.lines() {
@@ -220,6 +263,7 @@ Fornisci codice pulito, spiegazioni passo-passo e suggerimenti di qualità per q
 async fn stream_openai_compatible(
     app: &AppHandle,
     client: &reqwest::Client,
+    cancel_flag: Arc<std::sync::atomic::AtomicBool>,
     endpoint: &str,
     api_key: &str,
     model_id: &str,
@@ -253,6 +297,10 @@ async fn stream_openai_compatible(
 
     let mut stream = res.bytes_stream();
     while let Some(chunk) = stream.next().await {
+        if cancel_flag.load(Ordering::Relaxed) {
+            let _ = app.emit("agent-stopped", ());
+            return Ok(());
+        }
         if let Ok(bytes) = chunk {
             let text = String::from_utf8_lossy(&bytes);
             for line in text.lines() {

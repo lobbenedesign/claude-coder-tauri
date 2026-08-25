@@ -157,6 +157,93 @@ pub fn write_workspace_file(path: String, content: String) -> Result<bool, Strin
     Ok(true)
 }
 
+/// Applies a unified diff (as typically emitted by an LLM proposing a code
+/// change) to a real file on disk. Uses the `diffy` crate to actually parse
+/// and apply the patch — this is a genuine implementation of the
+/// Aider/Cursor "propose diff -> apply diff" pattern, not just chat text.
+fn apply_patch_text(path: &str, diff: &str) -> Result<String, String> {
+    let p = Path::new(path);
+    let original = if p.exists() {
+        fs::read_to_string(p).map_err(|e| format!("Impossibile leggere il file: {}", e))?
+    } else {
+        String::new()
+    };
+
+    let patch = diffy::Patch::from_str(diff)
+        .map_err(|e| format!("Diff non valido o malformato: {}", e))?;
+
+    diffy::apply(&original, &patch)
+        .map_err(|e| format!("Impossibile applicare la patch (contesto non corrispondente): {}", e))
+}
+
+/// Preview-only: computes what the file would look like after the diff is
+/// applied, without writing anything to disk. Used by the UI to show a
+/// confirmation dialog before the user commits the change.
+#[tauri::command]
+pub fn preview_diff_apply(path: String, diff: String) -> Result<String, String> {
+    apply_patch_text(&path, &diff)
+}
+
+/// Actually writes the patched content to disk. Only called after the user
+/// has reviewed and confirmed the diff in the UI.
+#[tauri::command]
+pub fn apply_diff_to_file(path: String, diff: String) -> Result<bool, String> {
+    let new_content = apply_patch_text(&path, &diff)?;
+    let p = Path::new(&path);
+    if let Some(parent) = p.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    fs::write(p, new_content).map_err(|e| format!("Impossibile scrivere il file: {}", e))?;
+    Ok(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::env;
+
+    #[test]
+    fn real_diff_is_applied_to_a_real_file_on_disk() {
+        let mut path = env::temp_dir();
+        path.push(format!("ccc_diff_test_{}.txt", std::process::id()));
+        fs::write(&path, "line one\nline two\nline three\n").unwrap();
+
+        let path_str = path.to_string_lossy().to_string();
+        let diff = format!(
+            "--- a/{name}\n+++ b/{name}\n@@ -1,3 +1,3 @@\n line one\n-line two\n+line TWO (edited)\n line three\n",
+            name = path.file_name().unwrap().to_string_lossy()
+        );
+
+        let preview = preview_diff_apply(path_str.clone(), diff.clone()).expect("preview should succeed");
+        assert!(preview.contains("line TWO (edited)"));
+        assert!(!preview.contains("line two\n"));
+
+        apply_diff_to_file(path_str.clone(), diff).expect("apply should succeed");
+        let on_disk = fs::read_to_string(&path).unwrap();
+        assert_eq!(on_disk, preview, "file on disk must match previewed content");
+        assert!(on_disk.contains("line TWO (edited)"));
+
+        fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn diff_with_mismatched_context_is_rejected_without_touching_the_file() {
+        let mut path = env::temp_dir();
+        path.push(format!("ccc_diff_test_bad_{}.txt", std::process::id()));
+        fs::write(&path, "untouched\n").unwrap();
+        let path_str = path.to_string_lossy().to_string();
+
+        // References context lines that do not exist in the real file, so
+        // diffy must fail to apply it instead of silently corrupting the file.
+        let diff = "--- a/x.txt\n+++ b/x.txt\n@@ -1,3 +1,3 @@\n this line\n-does not exist\n+in the real file\n at all\n";
+        let result = apply_diff_to_file(path_str.clone(), diff.to_string());
+        assert!(result.is_err(), "expected mismatched-context diff to be rejected");
+        assert_eq!(fs::read_to_string(&path).unwrap(), "untouched\n", "file must remain untouched on failure");
+
+        fs::remove_file(&path).ok();
+    }
+}
+
 #[tauri::command]
 pub fn open_in_editor(editor: String, path: String) -> Result<bool, String> {
     use std::process::Command;

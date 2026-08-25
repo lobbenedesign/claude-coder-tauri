@@ -1,4 +1,44 @@
 // CUSTOM CLAUDE CODER Frontend Engine
+//
+// NOTE ON ARCHITECTURE: this is a native Tauri v2 desktop app — there is no
+// backend HTTP/WebSocket server. Real communication with the Rust backend
+// happens exclusively through `window.__TAURI__.core.invoke(...)` (calling
+// #[tauri::command] functions in src-tauri/src/*.rs) and
+// `window.__TAURI__.event.listen(...)` (receiving events emitted from Rust,
+// e.g. "agent-chunk" during LLM streaming). The functions below that talk to
+// the real agent (chat send/stop, workspace attach, repo map, diff apply,
+// API key persistence) use this Tauri bridge. Some legacy sections further
+// down this file (CMUX multiplexer, Telegram bridge, MCP server list,
+// autodebug SSE loop, live token stats) still call `fetch("/api/...")`
+// against a REST API that does not exist in this desktop build; they are
+// left as-is (inert) since rebuilding those subsystems in Rust is out of
+// scope for this change.
+const TAURI = typeof window !== "undefined" ? window.__TAURI__ : undefined;
+function tauriInvoke(cmd, args) {
+  if (!TAURI || !TAURI.core) {
+    return Promise.reject(new Error("API Tauri non disponibile (l'app non è in esecuzione come desktop nativa)."));
+  }
+  return TAURI.core.invoke(cmd, args);
+}
+function tauriListen(event, handler) {
+  if (!TAURI || !TAURI.event) return () => {};
+  const unlistenPromise = TAURI.event.listen(event, handler);
+  return () => { unlistenPromise.then(fn => fn()); };
+}
+
+// Real settings loaded from disk via the `load_settings` Tauri command
+// (src-tauri/src/settings.rs). Populated on startup and reused whenever the
+// agent stream needs actual provider API keys.
+let realSettings = null;
+// Real repo-map (function/class signatures extracted from the files
+// currently on disk) generated via the `generate_repo_map` Tauri command
+// (src-tauri/src/repomap.rs), Aider-inspired context injected into every
+// agent prompt so the model has real structural awareness of the project.
+let currentRepoMap = "";
+let unlistenAgentChunk = null;
+let unlistenAgentDone = null;
+let unlistenAgentStopped = null;
+
 let activeModel = "qwen2.5:7b";
 let apiKeysStatus = {
   hasGeminiKey: false,
@@ -180,11 +220,11 @@ const statSpeed = document.getElementById("stat-speed");
 const statUptime = document.getElementById("stat-uptime");
 
 // Initialize Application
-document.addEventListener("DOMContentLoaded", () => {
+document.addEventListener("DOMContentLoaded", async () => {
   initTabs();
   initWebSocket();
   fetchModels();
-  attachWorkspace(attachedWorkspacePath);
+  await initRealSettingsAndWorkspace();
   fetchCmuxProcesses();
   fetchTelegramStatus();
   fetchStats();
@@ -192,6 +232,48 @@ document.addEventListener("DOMContentLoaded", () => {
   setInterval(fetchCmuxProcesses, 4000);
   initEventListeners();
 });
+
+// Load real persisted settings (API keys, active model, last workspace) from
+// disk via Tauri, then attach the real workspace via `scan_workspace`. This
+// is what actually makes the chat + explorer usable in the desktop build.
+async function initRealSettingsAndWorkspace() {
+  try {
+    realSettings = await tauriInvoke("load_settings");
+    if (realSettings) {
+      if (realSettings.activeModel) activeModel = realSettings.activeModel;
+      if (realSettings.attachedWorkspacePath) attachedWorkspacePath = realSettings.attachedWorkspacePath;
+
+      const setVal = (el, v) => { if (el && v) el.value = v; };
+      setVal(inputGeminiKey, realSettings.geminiApiKey);
+      setVal(inputGroqKey, realSettings.groqApiKey);
+      setVal(inputOpenrouterKey, realSettings.openrouterApiKey);
+      setVal(inputCerebrasKey, realSettings.cerebrasApiKey);
+      setVal(inputSambanovaKey, realSettings.sambanovaApiKey);
+      setVal(inputMistralKey, realSettings.mistralApiKey);
+      setVal(inputOpenaiKey, realSettings.openaiApiKey);
+      setVal(inputAnthropicKey, realSettings.anthropicApiKey);
+      setVal(inputDeepseekKey, realSettings.deepseekApiKey);
+      setVal(inputXaiKey, realSettings.xaiApiKey);
+      setVal(inputTogetherKey, realSettings.togetherApiKey);
+
+      apiKeysStatus = {
+        hasGeminiKey: !!realSettings.geminiApiKey,
+        hasGroqKey: !!realSettings.groqApiKey,
+        hasOpenRouterKey: !!realSettings.openrouterApiKey,
+        hasCerebrasKey: !!realSettings.cerebrasApiKey,
+        hasSambaNovaKey: !!realSettings.sambanovaApiKey,
+        hasMistralKey: !!realSettings.mistralApiKey,
+        hasOpenAIKey: !!realSettings.openaiApiKey,
+      };
+      updateKeyBadges();
+      updateActiveModelUI();
+    }
+  } catch (err) {
+    console.warn("Impossibile caricare le impostazioni reali via Tauri:", err);
+  }
+
+  await attachWorkspace(attachedWorkspacePath);
+}
 
 // Tab Navigation
 function initTabs() {
@@ -281,21 +363,30 @@ function initWebSocket() {
   };
 }
 
-// Attach & Inspect Workspace
+// Attach & Inspect Workspace — real implementation via the `scan_workspace`
+// Tauri command (src-tauri/src/workspace.rs), which really walks the
+// directory on disk (ignoring node_modules/.git/target/etc.), detects real
+// frameworks from real manifest files, and reads a real CLAUDE.md/.cursorrules
+// file if present.
 async function attachWorkspace(path) {
   try {
-    const res = await fetch("/api/workspace/attach", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ path })
-    });
-    const data = await res.json();
-    if (data.success && data.context) {
-      attachedWorkspacePath = path;
-      renderWorkspaceContext(data.context);
+    const ctx = await tauriInvoke("scan_workspace", { path });
+    attachedWorkspacePath = path;
+    renderWorkspaceContext(ctx);
+
+    if (realSettings) {
+      realSettings.attachedWorkspacePath = path;
+      tauriInvoke("save_settings", { settings: realSettings }).catch(() => {});
     }
+
+    // Refresh the real repo map for the new workspace in the background so
+    // it's ready to inject as context on the next prompt.
+    tauriInvoke("generate_repo_map", { path })
+      .then(map => { currentRepoMap = map || ""; })
+      .catch(err => { console.warn("Repo map generation failed:", err); currentRepoMap = ""; });
   } catch (err) {
     console.error("Error attaching workspace:", err);
+    appendAgentOutput(`\n[Custom Claude Coder] Impossibile analizzare la cartella '${path}': ${err.message || err}\n`, true);
   }
 }
 
@@ -373,10 +464,14 @@ function renderWorkspaceContext(ctx) {
 
   const chipRepoMap = document.getElementById("chip-repo-map");
   if (chipRepoMap) {
-    fetch("/api/workspace/repo-map").then(r => r.json()).then(data => {
-      chipRepoMap.textContent = `🗺️ ${data.totalSymbols || 0} Simboli AST`;
-      chipRepoMap.title = data.mapString ? `Mappa Simboli e Firme Estratti (Aider style):\n${data.mapString.slice(0, 400)}...` : "Mappa AST del progetto pronta";
-      if (data.totalSymbols > 0) {
+    tauriInvoke("generate_repo_map", { path: ctx.fullPath }).then(map => {
+      currentRepoMap = map || "";
+      const match = /# REPO MAP \((\d+) file, (\d+) simboli/.exec(currentRepoMap);
+      const fileCount = match ? match[1] : "0";
+      const symCount = match ? match[2] : "0";
+      chipRepoMap.textContent = `🗺️ ${symCount} Simboli reali (${fileCount} file)`;
+      chipRepoMap.title = currentRepoMap ? `Repo map reale (regex, Aider style) estratta dai file su disco:\n${currentRepoMap.slice(0, 500)}...` : "Repo map non disponibile";
+      if (Number(symCount) > 0) {
         chipRepoMap.style.borderColor = "#10b981";
         chipRepoMap.style.color = "#10b981";
       }
@@ -1195,44 +1290,43 @@ async function deleteModel(name) {
   }
 }
 
-// Save All API Keys Persistently
+// Save All API Keys Persistently — real implementation via the
+// `save_settings` Tauri command, which writes real JSON to the OS config
+// directory (see src-tauri/src/settings.rs::get_config_path). These are the
+// exact keys later read back by `load_settings` and forwarded to
+// `run_agent_stream` for real provider calls.
 async function saveAllApiKeys() {
-  const payload = {
-    cerebrasKey: inputCerebrasKey ? inputCerebrasKey.value.trim() : "",
-    sambanovaKey: inputSambanovaKey ? inputSambanovaKey.value.trim() : "",
-    mistralKey: inputMistralKey ? inputMistralKey.value.trim() : "",
-    groqKey: inputGroqKey ? inputGroqKey.value.trim() : "",
-    openrouterKey: inputOpenrouterKey ? inputOpenrouterKey.value.trim() : "",
-    geminiKey: inputGeminiKey ? inputGeminiKey.value.trim() : "",
-    openaiKey: inputOpenaiKey ? inputOpenaiKey.value.trim() : "",
-    anthropicKey: inputAnthropicKey ? inputAnthropicKey.value.trim() : "",
-    deepseekKey: inputDeepseekKey ? inputDeepseekKey.value.trim() : "",
-    xaiKey: inputXaiKey ? inputXaiKey.value.trim() : "",
-    kimiKey: inputKimiKey ? inputKimiKey.value.trim() : "",
-    qwenKey: inputQwenKey ? inputQwenKey.value.trim() : "",
-    glmKey: inputGlmKey ? inputGlmKey.value.trim() : "",
-    perplexityKey: inputPerplexityKey ? inputPerplexityKey.value.trim() : "",
-    togetherKey: inputTogetherKey ? inputTogetherKey.value.trim() : "",
-    fireworksKey: inputFireworksKey ? inputFireworksKey.value.trim() : "",
-    cohereKey: inputCohereKey ? inputCohereKey.value.trim() : "",
-    customApiEndpoint: inputCustomEndpoint ? inputCustomEndpoint.value.trim() : "",
-    customApiKey: inputCustomKey ? inputCustomKey.value.trim() : ""
-  };
+  const settings = realSettings || {};
+  settings.activeModel = activeModel;
+  settings.attachedWorkspacePath = attachedWorkspacePath;
+  settings.geminiApiKey = inputGeminiKey ? inputGeminiKey.value.trim() : "";
+  settings.groqApiKey = inputGroqKey ? inputGroqKey.value.trim() : "";
+  settings.openrouterApiKey = inputOpenrouterKey ? inputOpenrouterKey.value.trim() : "";
+  settings.cerebrasApiKey = inputCerebrasKey ? inputCerebrasKey.value.trim() : "";
+  settings.sambanovaApiKey = inputSambanovaKey ? inputSambanovaKey.value.trim() : "";
+  settings.mistralApiKey = inputMistralKey ? inputMistralKey.value.trim() : "";
+  settings.openaiApiKey = inputOpenaiKey ? inputOpenaiKey.value.trim() : "";
+  settings.anthropicApiKey = inputAnthropicKey ? inputAnthropicKey.value.trim() : "";
+  settings.deepseekApiKey = inputDeepseekKey ? inputDeepseekKey.value.trim() : "";
+  settings.xaiApiKey = inputXaiKey ? inputXaiKey.value.trim() : "";
+  settings.togetherApiKey = inputTogetherKey ? inputTogetherKey.value.trim() : "";
 
   try {
-    const res = await fetch("/api/settings/keys", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload)
-    });
-    const data = await res.json();
-    if (data.success) {
-      apiKeysStatus = data;
-      updateKeyBadges();
-      alert("✓ Tutte le chiavi API sono state salvate permanentemente su disco!");
-    }
+    await tauriInvoke("save_settings", { settings });
+    realSettings = settings;
+    apiKeysStatus = {
+      hasGeminiKey: !!settings.geminiApiKey,
+      hasGroqKey: !!settings.groqApiKey,
+      hasOpenRouterKey: !!settings.openrouterApiKey,
+      hasCerebrasKey: !!settings.cerebrasApiKey,
+      hasSambaNovaKey: !!settings.sambanovaApiKey,
+      hasMistralKey: !!settings.mistralApiKey,
+      hasOpenAIKey: !!settings.openaiApiKey,
+    };
+    updateKeyBadges();
+    alert("✓ Tutte le chiavi API sono state salvate permanentemente su disco!");
   } catch (err) {
-    alert("Errore nel salvataggio delle chiavi: " + err.message);
+    alert("Errore nel salvataggio delle chiavi: " + (err.message || err));
   }
 }
 
@@ -1333,60 +1427,184 @@ async function runAgentPrompt(prompt) {
   const checkSwarmMode = document.getElementById("check-swarm-mode");
   const isSwarm = !!(checkSwarmMode && checkSwarmMode.checked) || prompt.startsWith("/swarm") || prompt.startsWith("/ruflo");
 
+  if (isSwarm) {
+    appendAgentOutput(`\n[Custom Claude Coder] Nota: la "Ruflo Swarm Pipeline" multi-agente è un'idea futura non ancora implementata in questa build nativa — il prompt verrà inviato normalmente a un singolo modello.\n`, false);
+  }
+
   const assistantEntry = document.createElement("div");
   assistantEntry.className = "console-entry assistant";
   assistantEntry.id = "current-streaming-entry";
-  assistantEntry.textContent = isSwarm 
-    ? `🐝 Ruflo Swarm Pipeline in avvio con ${activeModel} (Architetto -> Coder -> Reviewer)...`
-    : `Custom Claude Coder sta elaborando con ${activeModel}...`;
+  assistantEntry.textContent = `Custom Claude Coder sta elaborando con ${activeModel}...`;
   consoleOutput.appendChild(assistantEntry);
   consoleOutput.scrollTop = consoleOutput.scrollHeight;
 
   setAgentRunningState(true);
+  await runAgentPromptViaTauri(prompt, assistantEntry);
+}
 
+// Real prompt execution: invokes the `run_agent_stream` Tauri command
+// (src-tauri/src/agent.rs), which makes a genuine streaming HTTP call to
+// whichever provider `activeModel` selects (local Ollama or one of the 7
+// cloud providers), and listens for the real "agent-chunk" / "agent-done" /
+// "agent-stopped" events it emits as tokens arrive.
+async function runAgentPromptViaTauri(prompt, assistantEntry) {
+  let hasReceivedChunk = false;
+  let fullText = "";
+
+  if (unlistenAgentChunk) unlistenAgentChunk();
+  if (unlistenAgentDone) unlistenAgentDone();
+  if (unlistenAgentStopped) unlistenAgentStopped();
+
+  const finish = () => {
+    if (unlistenAgentChunk) { unlistenAgentChunk(); unlistenAgentChunk = null; }
+    if (unlistenAgentDone) { unlistenAgentDone(); unlistenAgentDone = null; }
+    if (unlistenAgentStopped) { unlistenAgentStopped(); unlistenAgentStopped = null; }
+    setAgentRunningState(false);
+    renderDiffProposals(assistantEntry, fullText);
+  };
+
+  unlistenAgentChunk = tauriListen("agent-chunk", (event) => {
+    const text = event.payload || "";
+    if (!hasReceivedChunk) {
+      assistantEntry.textContent = "";
+      hasReceivedChunk = true;
+    }
+    fullText += text;
+    assistantEntry.textContent = fullText;
+    consoleOutput.scrollTop = consoleOutput.scrollHeight;
+  });
+
+  unlistenAgentDone = tauriListen("agent-done", () => {
+    finish();
+  });
+
+  unlistenAgentStopped = tauriListen("agent-stopped", () => {
+    fullText += "\n\n[Generazione interrotta dall'utente]";
+    assistantEntry.textContent = fullText;
+    assistantEntry.classList.add("error");
+    finish();
+  });
+
+  const s = realSettings || {};
   try {
-    const res = await fetch("/api/agent/run", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        prompt,
-        workspace: attachedWorkspacePath,
-        swarmMode: isSwarm
-      })
+    await tauriInvoke("run_agent_stream", {
+      prompt,
+      model: activeModel,
+      workspace: attachedWorkspacePath,
+      repoMap: currentRepoMap || "",
+      geminiKey: s.geminiApiKey || "",
+      groqKey: s.groqApiKey || "",
+      openrouterKey: s.openrouterApiKey || "",
+      cerebrasKey: s.cerebrasApiKey || "",
+      sambanovaKey: s.sambanovaApiKey || "",
+      mistralKey: s.mistralApiKey || "",
+      openaiKey: s.openaiApiKey || "",
     });
-
-    if (!res.ok) {
-      const errText = await res.text();
-      assistantEntry.textContent = `Errore (${res.status}): ${errText}`;
-      setAgentRunningState(false);
-      return;
-    }
-
-    // Direct HTTP Stream Reading
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let hasReceivedChunk = false;
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-
-      const chunk = decoder.decode(value, { stream: true });
-      if (chunk) {
-        if (!hasReceivedChunk) {
-          assistantEntry.textContent = "";
-          hasReceivedChunk = true;
-        }
-        assistantEntry.textContent += chunk;
-        consoleOutput.scrollTop = consoleOutput.scrollHeight;
-      }
-    }
-
-    setAgentRunningState(false);
   } catch (err) {
-    assistantEntry.textContent = `Errore di connessione: ${err.message}`;
-    setAgentRunningState(false);
+    assistantEntry.textContent = `Errore: ${err.message || err}`;
+    assistantEntry.classList.add("error");
+    finish();
   }
+}
+
+// ==========================================
+// REAL DIFF-BASED FILE EDITING (Aider/Cursor pattern)
+// ==========================================
+// Scans a finished assistant reply for ```diff fenced unified-diff blocks
+// (the system prompt in agent.rs instructs the model to use this format for
+// file edits) and renders an "Apply" card for each one. Applying calls the
+// real `preview_diff_apply` / `apply_diff_to_file` Tauri commands, which use
+// the `diffy` crate to genuinely parse and apply the patch to the file on
+// disk — not just display text.
+function renderDiffProposals(assistantEntry, fullText) {
+  if (!fullText) return;
+  const diffBlockRe = /```diff\n([\s\S]*?)```/g;
+  let match;
+  let index = 0;
+  while ((match = diffBlockRe.exec(fullText)) !== null) {
+    const diffText = match[1];
+    const filePath = extractDiffTargetPath(diffText);
+    if (!filePath) continue;
+    index++;
+    const card = buildDiffCard(diffText, filePath, index);
+    assistantEntry.appendChild(card);
+  }
+  consoleOutput.scrollTop = consoleOutput.scrollHeight;
+}
+
+function extractDiffTargetPath(diffText) {
+  const lines = diffText.split("\n");
+  for (const line of lines) {
+    if (line.startsWith("+++ ")) {
+      let p = line.slice(4).trim();
+      p = p.replace(/^b\//, "").split("\t")[0].trim();
+      if (p && p !== "/dev/null") return p;
+    }
+  }
+  for (const line of lines) {
+    if (line.startsWith("--- ")) {
+      let p = line.slice(4).trim();
+      p = p.replace(/^a\//, "").split("\t")[0].trim();
+      if (p && p !== "/dev/null") return p;
+    }
+  }
+  return null;
+}
+
+function resolveDiffPath(relOrAbs) {
+  if (!relOrAbs) return relOrAbs;
+  if (relOrAbs.startsWith("/") || /^[A-Za-z]:\\/.test(relOrAbs)) return relOrAbs;
+  const sep = attachedWorkspacePath.endsWith("/") ? "" : "/";
+  return `${attachedWorkspacePath}${sep}${relOrAbs}`;
+}
+
+function buildDiffCard(diffText, relPath, index) {
+  const absPath = resolveDiffPath(relPath);
+  const card = document.createElement("div");
+  card.className = "diff-proposal-card";
+  card.style.cssText = "margin-top:12px;border:1px solid rgba(99,102,241,0.35);border-radius:8px;overflow:hidden;background:rgba(13,17,23,0.9);";
+  const escaped = diffText.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  const coloredDiff = escaped.split("\n").map(l => {
+    let color = "var(--text-muted)";
+    if (l.startsWith("+") && !l.startsWith("+++")) color = "#4ade80";
+    else if (l.startsWith("-") && !l.startsWith("---")) color = "#f87171";
+    else if (l.startsWith("@@")) color = "#818cf8";
+    return `<div style="color:${color};white-space:pre;font-family:monospace;font-size:12px;">${l || " "}</div>`;
+  }).join("");
+
+  card.innerHTML = `
+    <div style="padding:8px 12px;background:rgba(99,102,241,0.1);display:flex;justify-content:space-between;align-items:center;">
+      <span style="font-size:12px;font-weight:600;">📝 Modifica proposta #${index}: <code>${relPath}</code></span>
+      <div style="display:flex;gap:6px;">
+        <button class="btn btn-secondary btn-sm diff-discard-btn" type="button">Ignora</button>
+        <button class="btn btn-primary btn-sm diff-apply-btn" type="button">✓ Applica al file</button>
+      </div>
+    </div>
+    <div style="max-height:260px;overflow:auto;padding:8px 12px;">${coloredDiff}</div>
+    <div class="diff-status" style="padding:0 12px 8px 12px;font-size:11px;"></div>
+  `;
+
+  const statusEl = card.querySelector(".diff-status");
+  card.querySelector(".diff-discard-btn").addEventListener("click", () => {
+    card.remove();
+  });
+  card.querySelector(".diff-apply-btn").addEventListener("click", async () => {
+    statusEl.textContent = "Applicazione in corso...";
+    try {
+      await tauriInvoke("preview_diff_apply", { path: absPath, diff: diffText });
+      await tauriInvoke("apply_diff_to_file", { path: absPath, diff: diffText });
+      statusEl.textContent = `✓ Applicata realmente a ${absPath}`;
+      statusEl.style.color = "#4ade80";
+      card.querySelector(".diff-apply-btn").disabled = true;
+      card.querySelector(".diff-apply-btn").textContent = "✓ Applicata";
+      if (activeExplorerFilePath === absPath) viewFileInExplorer(absPath);
+    } catch (err) {
+      statusEl.textContent = `Errore: ${err.message || err}`;
+      statusEl.style.color = "#f87171";
+    }
+  });
+
+  return card;
 }
 
 function appendAgentOutput(text, isError) {
@@ -1453,13 +1671,17 @@ function renderMermaidDiagrams() {
   }
 }
 
-// Stop Agent Task
+// Stop Agent Task — real abort: calls the `stop_agent_stream` Tauri command,
+// which flips a shared AtomicBool that the in-flight streaming loop in
+// src-tauri/src/agent.rs polls between HTTP chunks, actually breaking out of
+// the stream rather than just hiding the button.
 async function stopAgent() {
   try {
-    await fetch("/api/agent/stop", { method: "POST" });
+    await tauriInvoke("stop_agent_stream");
+  } catch (err) {
+    console.warn("stop_agent_stream failed:", err);
     setAgentRunningState(false);
-    appendAgentOutput("\n[Interrotto dall'utente]\n", true);
-  } catch {}
+  }
 }
 
 // Fetch Telemetry Stats

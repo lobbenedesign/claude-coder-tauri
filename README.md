@@ -28,11 +28,14 @@
 
 ### 🌟 Key Capabilities
 
-1. **Native Rust Multi-Provider LLM Core (`agent.rs`)**: Streaming HTTP client connecting directly to Ollama (local), OpenAI, Google Gemini, Cerebras, SambaNova, Mistral, Groq, and OpenRouter — verified against the actual code, not aspirational.
+1. **Native Rust Multi-Provider LLM Core (`agent.rs`)**: Streaming HTTP client connecting directly to Ollama (local), OpenAI, Google Gemini, Cerebras, SambaNova, Mistral, Groq, and OpenRouter — verified against the actual code, not aspirational. The chat UI is wired to this via real Tauri `invoke()` calls and `agent-chunk` / `agent-done` events (see below) — previous builds had a dead frontend that called a REST API which never existed in this app.
 2. **Native Filesystem Workspace Engine (`workspace.rs`)**: Fast file reading, writing, directory walking, search, and native file manager integration.
-3. **MCP Configuration Manager**: 1-click JSON export for 11+ Model Context Protocol server configurations to Cursor and Claude CLI settings.
-4. **Interactive Command Workflows**: UI support for `/swarm` pipeline staging, `/diagram` visual graphs, `/prd` scaffolding, and `/autofix` code validation.
-5. **Speech Input Integration**: Browser Web Speech API integration for prompt dictation.
+3. **Real Diff-Based File Editing** *(new)*: When the model proposes a file change, it is instructed (system prompt) to emit a fenced `diff` code block containing a unified diff. The UI detects these blocks, shows a colorized preview with an **Apply** button, and applying it calls the real `preview_diff_apply` / `apply_diff_to_file` Tauri commands, which use the `diffy` crate to genuinely parse and patch the file on disk — the Aider/Cursor "propose → review → apply" pattern, not just chat text. Covered by real Rust unit tests that write a temp file, apply a diff, and assert the on-disk bytes changed.
+4. **Real Repo Map** *(new, Aider-inspired)*: `generate_repo_map` walks the attached workspace and extracts real function/class/struct signatures via per-language regexes (Rust, TS/JS, Python, Dart, Go, Java/Kotlin) — no fabricated symbols, no tree-sitter dependency. The map is injected into the system prompt of every agent run so the model has real structural context about the project. Covered by a unit test that asserts real signatures are found in real temp files.
+5. **Real Stop-Generation** *(new)*: The "Interrompi" button calls `stop_agent_stream`, which flips a shared `AtomicBool` that every provider's streaming loop polls between HTTP chunks — a genuine mid-stream abort of the in-flight `reqwest` connection, not a UI-only state toggle.
+6. **Persisted Settings**: API keys and the active model/workspace are read/written to disk via `load_settings` / `save_settings` (`settings.rs`) and now actually populate the UI and the agent calls on startup.
+
+> **Known limitation (documented, not hidden):** the frontend (`ui/app.js`) also contains legacy sections — an MCP config exporter, `/swarm` `/autofix` `/diagram` command scaffolding, a CMUX process multiplexer, a Telegram bridge, and live token stats — that call a `fetch("/api/...")` REST API. This desktop build has **no HTTP server**; those sections are inert leftovers from an earlier prototype and are not yet backed by real Tauri commands. They are left in place (harmless, silently no-op) rather than removed, and are a good target for a future contribution.
 
 ### 🛠️ Build & Installation
 
@@ -58,11 +61,14 @@ cargo tauri build
   * Apertura istantanea di file e cartelle in **Cursor**, **VS Code**, **Windsurf** o nel **Finder/File Explorer**.
 
 ### 🌟 Funzionalità Chiave
-1. **Core Rust Multi-Provider (`agent.rs`)**: Client HTTP streaming nativo per 8 provider LLM (Ollama locale, OpenAI, Google Gemini, Cerebras, SambaNova, Mistral, Groq, OpenRouter) — verificato contro il codice reale, non aspirazionale.
+1. **Core Rust Multi-Provider (`agent.rs`)**: Client HTTP streaming nativo per 8 provider LLM (Ollama locale, OpenAI, Google Gemini, Cerebras, SambaNova, Mistral, Groq, OpenRouter) — verificato contro il codice reale, non aspirazionale. La chat è ora collegata a questo motore tramite vere chiamate Tauri `invoke()` e gli eventi reali `agent-chunk` / `agent-done`: nelle build precedenti il frontend era "morto" e chiamava una REST API mai esistita in questa app.
 2. **Motore Workspace Nativo (`workspace.rs`)**: Gestione rapida di file, cartelle, scansione albero e dispatch verso editor esterni.
-3. **Manager Configurazioni MCP**: Esportazione in 1 clic delle configurazioni JSON per server MCP verso Cursor e Claude CLI.
-4. **Comandi Interattivi**: Supporto interfaccia per pipeline `/swarm`, visualizzatore diagrammi `/diagram` e task `/autofix`.
-5. **Input Vocale**: Dettatura vocale integrata tramite Web Speech API.
+3. **Modifica file reale basata su diff** *(novità)*: quando il modello propone una modifica a un file, il system prompt lo istruisce a produrre un blocco di codice `diff` con un unified diff valido. La UI riconosce questi blocchi, mostra un'anteprima colorata con pulsante **Applica**, e il click chiama i comandi Tauri reali `preview_diff_apply` / `apply_diff_to_file`, che usano il crate `diffy` per analizzare e applicare davvero la patch sul file su disco — il pattern "proponi → rivedi → applica" di Aider/Cursor, non semplice testo in chat. Coperto da test Rust reali che scrivono un file temporaneo, applicano un diff e verificano che i byte su disco siano davvero cambiati.
+4. **Repo Map reale** *(novità, ispirata ad Aider)*: `generate_repo_map` scansiona la cartella agganciata ed estrae firme reali di funzioni/classi/struct tramite regex per linguaggio (Rust, TS/JS, Python, Dart, Go, Java/Kotlin) — nessun simbolo inventato, nessuna dipendenza da tree-sitter. La mappa viene iniettata nel system prompt di ogni richiesta, cosi' il modello ha un contesto strutturale reale del progetto. Coperto da un test che verifica il ritrovamento di firme reali in file temporanei reali.
+5. **Interruzione generazione reale** *(novità)*: il pulsante "Interrompi" chiama `stop_agent_stream`, che imposta un `AtomicBool` condiviso controllato da ogni loop di streaming tra un chunk HTTP e l'altro — un abort reale a metà stream della connessione `reqwest` in corso, non un semplice toggle di stato nella UI.
+6. **Impostazioni persistenti**: le chiavi API e il modello/workspace attivi vengono letti/scritti su disco tramite `load_settings` / `save_settings` (`settings.rs`) e ora popolano davvero la UI e le chiamate all'agente all'avvio.
+
+> **Limite noto (documentato, non nascosto):** il frontend (`ui/app.js`) contiene anche sezioni legacy — un esportatore di configurazioni MCP, gli scaffolding dei comandi `/swarm` `/autofix` `/diagram`, un multiplexer di processi CMUX, un bridge Telegram e statistiche token live — che chiamano una REST API `fetch("/api/...")`. Questa build desktop **non ha alcun server HTTP**; queste sezioni sono residui inerti di un prototipo precedente e non sono ancora collegate a comandi Tauri reali. Sono state lasciate in posto (innocue, falliscono silenziosamente) invece di essere rimosse, e sono un buon obiettivo per un contributo futuro.
 
 ### 🛠️ Compilazione & Esecuzione
 ```bash
