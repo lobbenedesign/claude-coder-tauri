@@ -82,5 +82,33 @@ cargo tauri build
 
 ---
 
+## ✅ Test automatizzati / Automated Tests
+
+<a name="test-automatizzati"></a>
+### 🇮🇹 Italiano
+
+**46 test reali**, tutti eseguiti in CI su ogni push/PR (vedi `.github/workflows/ci.yml`):
+
+- **35 test Rust** (`cd src-tauri && cargo test --lib`):
+  - `workspace.rs` (7 test) — apply/preview di un diff reale su un file reale su disco, rifiuto di un diff con contesto non corrispondente senza toccare il file, round-trip scrittura/lettura file, scan di una directory reale con rilevamento framework (Cargo.toml/package.json) e file ignorati (`node_modules`), errori su path inesistenti.
+  - `repomap.rs` (6 test) — estrazione di firme reali (funzioni Rust/Python/TS/JS, struct, interface, classi) da file scritti su disco in un test, esclusione di `node_modules`/`target`, file non supportati o vuoti, errore su directory inesistente.
+  - `agent.rs` (15 test) — **routing verso gli 8 provider LLM** (`route_model_to_provider`, la stessa funzione usata realmente da `run_agent_stream`, non una copia) e **parsing dei chunk di streaming** per i tre formati realmente usati (SSE OpenAI-compatibile per OpenAI/Cerebras/SambaNova/Mistral/Groq/OpenRouter, SSE Gemini, NDJSON Ollama), inclusi i casi limite: sentinella `[DONE]`, JSON malformato, chunk senza campo `content`.
+  - `models.rs` (4 test) — formattazione dimensioni modello (byte → "X.X GB").
+  - `settings.rs` (7 test) — default senza chiavi API precompilate, round-trip di serializzazione, retrocompatibilità con `settings.json` salvati da build precedenti prive dei campi più recenti (`anthropicApiKey`, ecc.).
+- **11 test frontend** (`npx vitest run`, su `ui/diff-utils.test.js`): estrazione del percorso file target da un diff unificato (header `+++`/`---`, fallback per le eliminazioni pure, `/dev/null`) e risoluzione del percorso (relativo/assoluto POSIX/assoluto Windows) rispetto alla workspace agganciata — la stessa logica usata realmente da `renderDiffProposals`/`buildDiffCard` in `ui/app.js` (refactorizzata in `ui/diff-utils.js` proprio per renderla testabile, mantenendo il comportamento identico).
+
+**Cosa NON è automatizzato (richiede credenziali live) e perché è onesto dirlo:** le chiamate HTTP reali verso gli 8 provider LLM (Ollama locale, OpenAI, Google Gemini, Cerebras, SambaNova, Mistral, Groq, OpenRouter) non sono coperte da test automatici — richiederebbero chiavi API reali come secrets CI e chiamerebbero servizi a pagamento/rate-limited a ogni run. È testata invece, con payload di fixture realistici, tutta la logica di parsing/routing agnostica dal provider (vedi sopra) che è la parte di business logic realmente a rischio di bug silenziosi. Allo stesso modo, `cargo tauri build` (bundle `.dmg`/`.exe`/`.AppImage` completo) non gira in CI — vedi i commenti in `.github/workflows/ci.yml` per il motivo.
+
+**Bug reale trovato e corretto durante la stesura dei test:** nessuno — la logica di diff-apply, repo-map e parsing streaming già presente era corretta; il lavoro qui è stato principalmente *estrarre* logica pura (routing provider, parsing SSE/NDJSON, formattazione dimensioni) dalle funzioni Tauri/async in cui era inline, così da poterla testare senza rete né chiavi API, e collegare quella stessa logica estratta al codice di produzione (non una copia duplicata).
+
+### 🇬🇧 English
+
+**46 real tests**, all run in CI on every push/PR (see `.github/workflows/ci.yml`):
+
+- **35 Rust tests** (`cd src-tauri && cargo test --lib`) covering real diff-apply to a real file on disk (including a mismatched-context diff being rejected without corrupting the file), real repo-map extraction from real temp files (Rust/Python/TS/JS, with `node_modules`/`target` correctly ignored), the **8-provider routing function** and **SSE/NDJSON stream-chunk parsing** actually used by `run_agent_stream` (not a duplicate — the production code calls the same tested functions), model-size formatting, and settings serialization/backward-compatibility.
+- **11 frontend tests** (`npx vitest run`, `ui/diff-utils.test.js`) covering the diff-target-path extraction and workspace-path resolution logic used by the real "propose diff → apply" UI flow, extracted into `ui/diff-utils.js` for testability with identical behavior.
+
+**What is NOT automated, honestly:** real HTTP calls to the 8 LLM providers require live API keys and would hit paid/rate-limited services on every CI run, so they are not covered by automated tests — the provider-agnostic parsing/routing logic they depend on is tested instead, with fixture payloads. Likewise, a full `cargo tauri build` bundle is not run in CI (see comments in the workflow file for why).
+
 ## 📄 License / Licenza
 Released under the [MIT License](LICENSE).

@@ -1523,7 +1523,7 @@ function renderDiffProposals(assistantEntry, fullText) {
   let index = 0;
   while ((match = diffBlockRe.exec(fullText)) !== null) {
     const diffText = match[1];
-    const filePath = extractDiffTargetPath(diffText);
+    const filePath = DiffUtils.extractDiffTargetPath(diffText);
     if (!filePath) continue;
     index++;
     const card = buildDiffCard(diffText, filePath, index);
@@ -1532,34 +1532,8 @@ function renderDiffProposals(assistantEntry, fullText) {
   consoleOutput.scrollTop = consoleOutput.scrollHeight;
 }
 
-function extractDiffTargetPath(diffText) {
-  const lines = diffText.split("\n");
-  for (const line of lines) {
-    if (line.startsWith("+++ ")) {
-      let p = line.slice(4).trim();
-      p = p.replace(/^b\//, "").split("\t")[0].trim();
-      if (p && p !== "/dev/null") return p;
-    }
-  }
-  for (const line of lines) {
-    if (line.startsWith("--- ")) {
-      let p = line.slice(4).trim();
-      p = p.replace(/^a\//, "").split("\t")[0].trim();
-      if (p && p !== "/dev/null") return p;
-    }
-  }
-  return null;
-}
-
-function resolveDiffPath(relOrAbs) {
-  if (!relOrAbs) return relOrAbs;
-  if (relOrAbs.startsWith("/") || /^[A-Za-z]:\\/.test(relOrAbs)) return relOrAbs;
-  const sep = attachedWorkspacePath.endsWith("/") ? "" : "/";
-  return `${attachedWorkspacePath}${sep}${relOrAbs}`;
-}
-
 function buildDiffCard(diffText, relPath, index) {
-  const absPath = resolveDiffPath(relPath);
+  const absPath = DiffUtils.resolveDiffPath(relPath, attachedWorkspacePath);
   const card = document.createElement("div");
   card.className = "diff-proposal-card";
   card.style.cssText = "margin-top:12px;border:1px solid rgba(99,102,241,0.35);border-radius:8px;overflow:hidden;background:rgba(13,17,23,0.9);";

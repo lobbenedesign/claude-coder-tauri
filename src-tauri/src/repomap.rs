@@ -216,4 +216,83 @@ mod tests {
 
         fs::remove_dir_all(&dir).ok();
     }
+
+    #[test]
+    fn extracts_typescript_and_javascript_signatures() {
+        let mut dir = std::env::temp_dir();
+        dir.push(format!("ccc_repomap_test_ts_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        fs::write(
+            dir.join("service.ts"),
+            "export function calcolaTotale(a: number, b: number) {\n  return a + b;\n}\n\nexport interface Ordine {\n  id: number;\n}\n\nexport class GestoreOrdini {\n  run() {}\n}\n",
+        )
+        .unwrap();
+
+        let map = generate_repo_map(dir.to_string_lossy().to_string()).expect("repo map should succeed");
+
+        assert!(map.contains("calcolaTotale"), "map missing ts function: {}", map);
+        assert!(map.contains("interface Ordine"), "map missing ts interface: {}", map);
+        assert!(map.contains("class GestoreOrdini"), "map missing ts class: {}", map);
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn ignores_files_inside_node_modules_and_target_dirs() {
+        let mut dir = std::env::temp_dir();
+        dir.push(format!("ccc_repomap_test_ignored_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("node_modules")).unwrap();
+        fs::create_dir_all(dir.join("target")).unwrap();
+
+        fs::write(
+            dir.join("node_modules").join("dep.js"),
+            "function shouldNotAppear() {}\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("target").join("built.rs"),
+            "pub fn also_should_not_appear() {}\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("real.js"),
+            "function shouldAppear() {}\n",
+        )
+        .unwrap();
+
+        let map = generate_repo_map(dir.to_string_lossy().to_string()).expect("repo map should succeed");
+
+        assert!(map.contains("shouldAppear"), "map missing real symbol: {}", map);
+        assert!(!map.contains("shouldNotAppear"), "map leaked node_modules symbol: {}", map);
+        assert!(!map.contains("also_should_not_appear"), "map leaked target/ symbol: {}", map);
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn unsupported_extensions_and_empty_files_are_skipped() {
+        let mut dir = std::env::temp_dir();
+        dir.push(format!("ccc_repomap_test_unsupported_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        fs::write(dir.join("notes.txt"), "fn not_real_code() {}\n").unwrap();
+        fs::write(dir.join("empty.rs"), "").unwrap();
+
+        let map = generate_repo_map(dir.to_string_lossy().to_string()).expect("repo map should succeed");
+
+        assert!(!map.contains("not_real_code"), "map should not scan .txt files: {}", map);
+        assert!(map.starts_with("# REPO MAP (0 file"), "expected zero files scanned, got: {}", map);
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn missing_directory_returns_error() {
+        let result = generate_repo_map("/this/path/almost-certainly/does/not/exist/ccc".to_string());
+        assert!(result.is_err());
+    }
 }

@@ -7,7 +7,9 @@ Cargo.lock
 # Dependencies
 node_modules/
 bun.lockb
-package-lock.json
+# package-lock.json is intentionally NOT ignored: it's needed for
+# `npm ci` in .github/workflows/ci.yml to get a reproducible frontend
+# test install (see ui/*.test.js, run via vitest).
 
 # Local Environment & Secrets
 .env

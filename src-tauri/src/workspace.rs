@@ -242,6 +242,55 @@ mod tests {
 
         fs::remove_file(&path).ok();
     }
+
+    #[test]
+    fn write_then_read_workspace_file_round_trips_real_bytes_on_disk() {
+        let mut path = env::temp_dir();
+        path.push(format!("ccc_rw_test_{}.txt", std::process::id()));
+        let path_str = path.to_string_lossy().to_string();
+
+        write_workspace_file(path_str.clone(), "contenuto reale\ncon più righe\n".to_string())
+            .expect("write should succeed");
+        let content = read_workspace_file(path_str.clone()).expect("read should succeed");
+        assert_eq!(content, "contenuto reale\ncon più righe\n");
+
+        fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn read_workspace_file_errors_on_missing_file() {
+        let result = read_workspace_file("/this/path/almost-certainly/does/not/exist/ccc.txt".to_string());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn scan_workspace_detects_frameworks_and_lists_real_files() {
+        let mut dir = env::temp_dir();
+        dir.push(format!("ccc_scan_test_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        fs::write(dir.join("Cargo.toml"), "[package]\nname = \"x\"\n").unwrap();
+        fs::write(dir.join("package.json"), "{}\n").unwrap();
+        fs::create_dir_all(dir.join("node_modules")).unwrap();
+        fs::write(dir.join("node_modules").join("ignored.js"), "// should not be counted\n").unwrap();
+
+        let ctx = scan_workspace(dir.to_string_lossy().to_string()).expect("scan should succeed");
+
+        assert!(ctx.frameworks.contains(&"Rust / Cargo".to_string()));
+        assert!(ctx.frameworks.contains(&"Node.js".to_string()));
+        // node_modules is in the ignored_names list, so its file must not be walked.
+        assert!(!ctx.tree.iter().any(|n| n.name == "ignored.js"));
+        assert_eq!(ctx.total_files, 2, "only Cargo.toml and package.json should be counted");
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn scan_workspace_errors_on_missing_directory() {
+        let result = scan_workspace("/this/path/almost-certainly/does/not/exist/ccc".to_string());
+        assert!(result.is_err());
+    }
 }
 
 #[tauri::command]

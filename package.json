@@ -1,0 +1,12 @@
+{
+  "name": "claude-coder-tauri-ui-tests",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Frontend unit tests for the ui/ vanilla-JS Tauri webview (no build step, no bundler — the app itself ships as plain <script> files).",
+  "scripts": {
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "vitest": "^2.1.9"
+  }
+}

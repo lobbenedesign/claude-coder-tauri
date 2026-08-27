@@ -87,3 +87,83 @@ pub fn save_settings(settings: AppSettings) -> Result<bool, String> {
     fs::write(path, json).map_err(|e| e.to_string())?;
     Ok(true)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_settings_have_no_api_keys_prefilled() {
+        // Every API key must default to empty — a non-empty default would be a
+        // real security/UX bug (a key nobody typed being sent to a provider).
+        let s = AppSettings::default();
+        assert_eq!(s.gemini_api_key, "");
+        assert_eq!(s.groq_api_key, "");
+        assert_eq!(s.openrouter_api_key, "");
+        assert_eq!(s.cerebras_api_key, "");
+        assert_eq!(s.sambanova_api_key, "");
+        assert_eq!(s.mistral_api_key, "");
+        assert_eq!(s.openai_api_key, "");
+        assert_eq!(s.anthropic_api_key, "");
+        assert_eq!(s.deepseek_api_key, "");
+        assert_eq!(s.xai_api_key, "");
+        assert_eq!(s.together_api_key, "");
+    }
+
+    #[test]
+    fn default_settings_have_a_non_empty_workspace_and_model() {
+        let s = AppSettings::default();
+        assert!(!s.attached_workspace_path.is_empty());
+        assert_eq!(s.active_model, "qwen2.5:7b");
+    }
+
+    #[test]
+    fn settings_survive_a_json_serialize_deserialize_round_trip() {
+        // Simulates the real load_settings/save_settings path (which is just
+        // serde_json::to_string_pretty + fs::write, and fs::read_to_string +
+        // serde_json::from_str) without touching the real user config dir.
+        let mut original = AppSettings::default();
+        original.active_model = "gpt-4o".to_string();
+        original.openai_api_key = "sk-test-not-a-real-key".to_string();
+
+        let json = serde_json::to_string_pretty(&original).unwrap();
+        let restored: AppSettings = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(restored.active_model, "gpt-4o");
+        assert_eq!(restored.openai_api_key, "sk-test-not-a-real-key");
+        assert_eq!(restored.attached_workspace_path, original.attached_workspace_path);
+    }
+
+    #[test]
+    fn deserializing_old_settings_json_without_newer_key_fields_still_works() {
+        // Settings files saved by an older build won't have anthropicApiKey /
+        // deepseekApiKey / xaiApiKey / togetherApiKey at all. Those fields are
+        // #[serde(default)], so loading must not fail — this guards against a
+        // real backward-compatibility regression.
+        let legacy_json = r#"{
+            "activeModel": "qwen2.5:7b",
+            "attachedWorkspacePath": "/Users/someone",
+            "geminiApiKey": "",
+            "groqApiKey": "",
+            "openrouterApiKey": "",
+            "cerebrasApiKey": "",
+            "sambanovaApiKey": "",
+            "mistralApiKey": "",
+            "openaiApiKey": ""
+        }"#;
+
+        let parsed: AppSettings = serde_json::from_str(legacy_json)
+            .expect("settings.json missing newer optional keys must still parse");
+        assert_eq!(parsed.anthropic_api_key, "");
+        assert_eq!(parsed.deepseek_api_key, "");
+        assert_eq!(parsed.xai_api_key, "");
+        assert_eq!(parsed.together_api_key, "");
+    }
+
+    #[test]
+    fn config_path_points_at_the_expected_app_subdirectory_and_file() {
+        let path = get_config_path();
+        assert_eq!(path.file_name().unwrap(), "settings.json");
+        assert!(path.to_string_lossy().contains("custom-claude-coder"));
+    }
+}

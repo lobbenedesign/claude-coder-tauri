@@ -1,0 +1,93 @@
+name: CI
+
+# What this workflow actually does (read before trusting the green check):
+#   - rust-tests: compiles the Tauri v2 Rust backend (src-tauri/) in test
+#     mode and runs `cargo test --lib`, i.e. every #[cfg(test)] unit test in
+#     src-tauri/src/*.rs (diff-apply, repo-map, provider routing / SSE
+#     parsing, settings serialization, workspace scanning).
+#   - frontend-tests: runs the vitest suite over ui/*.test.js (currently the
+#     pure diff-path-resolution helpers used by the "propose diff -> apply"
+#     UI flow).
+#
+# What this workflow deliberately does NOT do:
+#   - It does NOT run `cargo tauri build` / produce an installable .dmg,
+#     .exe, or .AppImage. A full Tauri bundle build needs several more
+#     minutes and extra platform-specific tooling per OS (and, for a signed
+#     macOS/Windows build, secrets this repo does not have configured). If
+#     that's ever needed, add a separate `tauri-apps/tauri-action` job
+#     rather than growing this one.
+#   - It does NOT exercise any of the 8 LLM provider integrations against
+#     their real APIs — that would require live API keys as GitHub Secrets.
+#     Instead, the Rust tests cover the provider-agnostic parsing logic
+#     (SSE delta extraction, model->provider routing) with fixture
+#     request/response payloads, and the actual HTTP calls are left
+#     untested here (see README.md, "Test automatizzati" section).
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  rust-tests:
+    name: Rust unit tests (cargo test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # System deps required to compile the Tauri v2 / wry / webkit2gtk
+      # dependency graph on Linux, even for `cargo test` (no GUI is shown,
+      # but the crate still links against these). Package list matches the
+      # official Tauri v2 Linux prerequisites for Ubuntu 22.04/24.04 runners.
+      - name: Install system dependencies (Tauri v2 Linux prerequisites)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libxdo-dev \
+            libssl-dev \
+            build-essential \
+            curl \
+            wget \
+            file \
+            patchelf
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry and build artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            src-tauri/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('src-tauri/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Run cargo test (backend unit tests)
+        working-directory: src-tauri
+        run: cargo test --lib --verbose
+
+  frontend-tests:
+    name: Frontend unit tests (vitest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run vitest (frontend unit tests)
+        run: npx vitest run
